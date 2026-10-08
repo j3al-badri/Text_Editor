@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Word-Like Editor Fixed</title>
+<style>
+body {margin:0; background:#e6e6e6; font-family:Calibri,Arial,sans-serif; display:flex; flex-direction:column; height:100vh;}
+header {background:#fff; border-bottom:1px solid #bbb; padding:6px; display:flex; flex-wrap:wrap; gap:6px;}
+button, select, input[type=color], input[type=number]{padding:4px 6px; font-size:14px; border:1px solid #ccc; background:#fff; cursor:pointer;}
+button:hover, select:hover, input:hover{background:#f0f0f0;}
+#workspace{flex:1; overflow:auto; padding:20px;}
+.page{background:#fff; margin:20px auto; position:relative; box-sizing:border-box; --margin:96px; min-height:1123px; width:794px;}
+.page-header, .page-footer{position:absolute; left:var(--margin); right:var(--margin); font-size:13px; color:#555;}
+.page-header{top:20px; border-bottom:1px solid #ccc;}
+.page-footer{bottom:20px; border-top:1px solid #ccc; text-align:center;}
+.editor{position:absolute; top:60px; bottom:60px; left:var(--margin); right:var(--margin); outline:none; font-size:16px; line-height:1.6; overflow:auto; overflow-wrap:break-word; white-space:pre-wrap;}
+table{border-collapse:collapse;} td{border:1px solid #000;padding:6px;min-width:40px;} td.selected{background:#cce5ff;}
+.shape-btns {display:none; position:absolute; top:35px; left:10px; background:#fff; border:1px solid #ccc; padding:5px; z-index:1000;}
+.shape-btns button{display:block; margin:2px 0;}
+.shape {position:absolute; border:1px solid black; background:transparent; cursor:move; box-sizing:border-box;}
+.shape.selected {outline:2px dashed blue;}
+</style>
+</head>
+<body>
+<header>
+Page:<select onchange="setPageSize(this.value)"><option>A4</option><option>A3</option><option>A5</option></select>
+Margin(px):<input type="number" value="96" min="30" max="200" onchange="setMargin(this.value)">
+<button onclick="addPage()">New Page</button>
+<button onclick="deletePage()">Delete Page</button>
+<button onclick="undo()">Undo</button>
+<button onclick="redo()">Redo</button>
+Font Size:<select onchange="exec('fontSize',this.value)"><option value="1">8</option><option value="2">10</option><option value="3">12</option><option value="4">14</option><option value="5">18</option><option value="6">24</option><option value="7">36</option></select>
+<input type="color" onchange="exec('foreColor',this.value)" title="Text Color">
+<button onclick="exec('removeFormat')">Clear</button>
+<button onclick="exec('bold')">B</button>
+<button onclick="exec('italic')">I</button>
+<button onclick="exec('underline')">U</button>
+<button onclick="exec('justifyLeft')">⬅</button>
+<button onclick="exec('justifyCenter')">⬍</button>
+<button onclick="exec('justifyRight')">➡</button>
+<button onclick="exec('justifyFull')">☰</button>
+<button onclick="setDir('ltr')">LTR</button>
+<button onclick="setDir('rtl')">RTL</button>
+<button onclick="insertImage()">Image</button>
+<button onclick="insertTable()">Table</button>
+<button onclick="addRow()">+Row</button>
+<button onclick="addCol()">+Col</button>
+<button onclick="delCell()">Del Cell</button>
+<button onclick="toggleSpell()">Spell</button>
+<button onclick="openFile()">Open</button>
+<button onclick="saveFile()">Save</button>
+<button onclick="printDoc()">Print</button>
+<button onclick="toggleShapes()">Draw Shapes</button>
+Fill Color: <input type="color" id="shapeColor" value="#ffffff">
+Line Color: <input type="color" id="lineColor" value="#000000">
+</header>
+
+<div class="shape-btns" id="shapeButtons">
+  <button onclick="addShape('textbox')">Text Box</button>
+  <button onclick="addShape('line')">Line</button>
+  <button onclick="addShape('arrow')">Arrow</button>
+  <button onclick="addShape('rectangle')">Rectangle</button>
+  <button onclick="addShape('oval')">Oval</button>
+</div>
+
+<div id="workspace"></div>
+
+<script>
+// --- State
+let pageSize="A4", margin=96, spell=true, activePage=null, selectedCell=null;
+let selectedShape=null;
+let undoStack=[], redoStack=[];
+
+// --- Workspace
+const workspace = document.getElementById("workspace");
+
+// --- PAGE FUNCTIONS
+function createPage(num){
+  const page=document.createElement("div");
+  page.className="page";
+  page.style.setProperty("--margin",margin+"px");
+  page.innerHTML=`<div class="page-header" contenteditable="true">Header</div>
+                  <div class="editor" contenteditable="true" spellcheck="true" oninput="autoFlow()"></div>
+                  <div class="page-footer">Page ${num}</div>`;
+  page.onclick = () => activePage = page;
+  return page;
+}
+
+function addPage(){ const num=document.querySelectorAll(".page").length+1; const page=createPage(num); workspace.appendChild(page); activePage=page; page.querySelector(".editor").focus(); saveState(); }
+function deletePage(){ if(!activePage) return; activePage.remove(); renumberPages(); activePage=document.querySelector(".page"); if(activePage) activePage.querySelector(".editor").focus(); saveState(); }
+function renumberPages(){ document.querySelectorAll(".page-footer").forEach((f,i)=>f.textContent="Page "+(i+1)); }
+function setPageSize(size){ pageSize=size; document.querySelectorAll(".page").forEach(p=>{ if(size=="A4"){p.style.width="794px"; p.style.minHeight="1123px";} if(size=="A3"){p.style.width="1123px"; p.style.minHeight="1587px";} if(size=="A5"){p.style.width="559px"; p.style.minHeight="794px";}});}
+function setMargin(m){ margin=m; document.querySelectorAll(".page").forEach(p=>p.style.setProperty("--margin",margin+"px")); }
+
+// --- TEXT FUNCTIONS
+function exec(cmd,val=null){ document.execCommand(cmd,false,val); saveState(); }
+function setDir(dir){ const editor=document.activeElement; if(!editor.classList.contains("editor")) return; editor.dir=dir; moveCursorEnd(editor,dir); saveState(); }
+function moveCursorEnd(el,dir){ el.focus(); const range=document.createRange(); const sel=window.getSelection(); range.selectNodeContents(el); range.collapse(dir==="ltr"?false:true); sel.removeAllRanges(); sel.addRange(range);}
+function insertImage(){ const input=document.createElement("input"); input.type="file"; input.accept="image/*"; input.onchange=()=>{ const reader=new FileReader(); reader.onload=()=>{ exec("insertImage",reader.result); saveState();}; reader.readAsDataURL(input.files[0]);}; input.click();}
+function insertTable(){ let r=prompt("Rows?",2); let c=prompt("Columns?",2); if(!r||!c)return; let html="<table>"; for(let i=0;i<r;i++){ html+="<tr>"; for(let j=0;j<c;j++) html+="<td>&nbsp;</td>"; html+="</tr>";} html+="</table><br>"; exec("insertHTML",html); saveState();}
+document.addEventListener("click",e=>{ if(e.target.tagName==="TD"){ if(selectedCell) selectedCell.classList.remove("selected"); selectedCell=e.target; selectedCell.classList.add("selected"); }});
+function addRow(){ if(!selectedCell)return; const row=selectedCell.parentElement.cloneNode(true); selectedCell.parentElement.after(row); saveState();}
+function addCol(){ if(!selectedCell)return; const idx=selectedCell.cellIndex; selectedCell.closest("table").querySelectorAll("tr").forEach(r=>r.insertCell(idx+1).innerHTML="&nbsp;"); saveState();}
+function delCell(){ if(selectedCell) selectedCell.remove(); saveState();}
+function toggleSpell(){ spell=!spell; document.querySelectorAll(".editor").forEach(e=>e.spellcheck=spell);}
+function saveFile(){ const blob=new Blob([document.documentElement.outerHTML],{type:"text/html"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="document.html"; a.click();}
+function openFile(){ const input=document.createElement("input"); input.type="file"; input.accept=".html,.txt"; input.onchange=e=>{ const reader=new FileReader(); reader.onload=()=>{ workspace.innerHTML=reader.result; autoFlow(); saveState(); activePage=document.querySelector(".page"); if(activePage) activePage.querySelector(".editor").focus(); }; reader.readAsText(input.files[0]);}; input.click();}
+function printDoc(){ const w=window.open('','', 'height=800,width=1000'); w.document.write('<html><head><title>Print</title></head><body>'); document.querySelectorAll(".page").forEach(p=>{ w.document.write(p.outerHTML+'<br>');}); w.document.write('</body></html>'); w.document.close(); w.focus(); w.print(); w.close();}
+
+// --- SHAPES
+function toggleShapes(){ const btns=document.getElementById("shapeButtons"); btns.style.display = btns.style.display==="block"?"none":"block"; }
+function addShape(type){
+  if(!activePage){ alert("Click a page first!"); return; }
+  const shape=document.createElement("div");
+  shape.className="shape";
+  const fill=document.getElementById("shapeColor").value;
+  const line=document.getElementById("lineColor").value;
+  shape.style.width="100px";
+  shape.style.height=(type==="line"||type==="arrow")?"2px":"100px";
+  shape.style.left="50px"; shape.style.top="100px";
+  if(type==="line"){ shape.style.border="1px solid "+line; shape.style.background="none"; }
+  else if(type==="arrow"){ shape.innerHTML="&#8594;"; shape.style.fontSize="20px"; shape.style.lineHeight="20px"; shape.style.border="none"; shape.style.color=line; shape.style.background="none"; }
+  else{ shape.style.border="1px solid "+line; shape.style.background=fill; if(type==="textbox"){shape.contentEditable=true; shape.innerText="Text";} if(type==="oval") shape.style.borderRadius="50%"; }
+  activePage.appendChild(shape); makeDraggable(shape); saveState();
+}
+function makeDraggable(el){ let offsetX,offsetY,isDown=false; el.onmousedown=function(e){ selectedShape && selectedShape.classList.remove("selected"); selectedShape=el; el.classList.add("selected"); offsetX=e.offsetX; offsetY=e.offsetY; isDown=true; }; document.onmouseup=function(){isDown=false;}; document.onmousemove=function(e){ if(!isDown||!selectedShape) return; const rect=selectedShape.parentElement.getBoundingClientRect(); selectedShape.style.left=(e.pageX-offsetX-rect.left)+"px"; selectedShape.style.top=(e.pageY-offsetY-rect.top)+"px"; }}
+
+// --- DELETE SHAPE
+document.addEventListener("keydown", e=>{ if(e.key==="Delete" && selectedShape){ selectedShape.remove(); selectedShape=null; saveState(); } });
+
+// --- UNDO/REDO
+function saveState(){ undoStack.push(workspace.innerHTML); redoStack=[]; }
+function undo(){ if(undoStack.length>1){ redoStack.push(undoStack.pop()); workspace.innerHTML=undoStack[undoStack.length-1]; attachEvents(); } }
+function redo(){ if(redoStack.length>0){ const state=redoStack.pop(); undoStack.push(state); workspace.innerHTML=state; attachEvents(); } }
+function attachEvents(){ document.querySelectorAll(".page").forEach(p=>p.onclick=()=>activePage=p); }
+
+// --- ENTER KEY
+document.addEventListener("keydown",function(e){ if(e.key==="Enter" && document.activeElement.classList.contains("editor")){ e.preventDefault(); const sel=window.getSelection(); const range=sel.getRangeAt(0); const br=document.createElement("br"); range.deleteContents(); range.insertNode(br); range.setStartAfter(br); range.setEndAfter(br); sel.removeAllRanges(); sel.addRange(range); } });
+
+// --- RTL/LTR detection
+document.addEventListener("input",function(e){ const editor=e.target; if(!editor.classList.contains("editor")) return; const val=editor.textContent.trim(); if(!val) return; const arabic=/[\u0600-\u06FF]/; if(arabic.test(val[0])) moveCursorEnd(editor,"rtl"); else moveCursorEnd(editor,"ltr"); });
+
+// --- AUTO PAGE FLOW
+function autoFlow(){ let pages=Array.from(document.querySelectorAll(".page")); let blocks=[]; pages.forEach(p=>blocks.push(...Array.from(p.querySelector(".editor").childNodes))); pages.forEach(p=>p.querySelector(".editor").innerHTML=""); let i=0; pages.forEach(p=>{ let ed=p.querySelector(".editor"); while(i<blocks.length){ ed.appendChild(blocks[i]); i++; if(ed.scrollHeight>ed.clientHeight) break; } }); if(i<blocks.length) addPage(), autoFlow(); renumberPages(); saveState(); }
+
+// --- INIT
+document.addEventListener("DOMContentLoaded",()=>{ addPage(); });
+</script>
+</body>
+</html>
